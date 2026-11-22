@@ -236,6 +236,13 @@ const Dashboard = () => {
                     </div>
                 </div>
 
+                <div className="retention-notice-banner">
+                    <span className="retention-notice-icon">⏱️</span>
+                    <p className="retention-notice-text">
+                        <strong>Otomatik Temizlik Bilgilendirmesi:</strong> Depolama alanı optimizasyonu kapsamında yüklenen videoların ham dosyaları işlem tamamlandığında, işlenmiş videolar ve kayıtları ise <strong>24 saat sonunda</strong> sistemden otomatik olarak silinmektedir. Lütfen tamamlanan dosyalarınızı bu süre içinde indirin.
+                    </p>
+                </div>
+
                 {error && <div className="alert" style={{ marginTop: '0', marginBottom: '20px' }}>{error}</div>}
 
                 {groupedVideos.length === 0 && !error ? (
