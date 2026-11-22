@@ -13,6 +13,7 @@ import com.veyzo.media_editing_system.dto.response.VideoStatusResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -26,6 +27,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -109,7 +111,32 @@ public class VideoService {
     @Transactional
     public void deleteVideo(UUID videoId) {
         Video video = getOwnedVideo(videoId);
+        deletePhysicalFiles(video);
+        videoRepository.delete(video);
+    }
 
+    @Scheduled(fixedRate = 3600000)
+    @Transactional
+    public void cleanupExpiredVideos() {
+        LocalDateTime cutoffTime = LocalDateTime.now().minusHours(24);
+        List<Video> expiredVideos = videoRepository.findByCreatedAtBeforeAndStatusNot(
+                cutoffTime,
+                VideoStatus.PROCESSING
+        );
+
+        if (expiredVideos.isEmpty()) {
+            return;
+        }
+
+        for (Video video : expiredVideos) {
+            deletePhysicalFiles(video);
+        }
+
+        videoRepository.deleteAll(expiredVideos);
+        log.info("24 saatlik saklama süresini dolduran {} adet video kaydı ve fiziksel dosyaları otomatik olarak temizlendi.", expiredVideos.size());
+    }
+
+    private void deletePhysicalFiles(Video video) {
         try {
             if (video.getOriginalFilePath() != null && !"virtual".equals(video.getOriginalFilePath())) {
                 Files.deleteIfExists(Paths.get(video.getOriginalFilePath()));
@@ -118,9 +145,8 @@ public class VideoService {
                 Files.deleteIfExists(Paths.get(video.getProcessedFilePath()));
             }
         } catch (Exception e) {
-            log.error("Dosya fiziksel olarak silinirken bir hata ile karşılaşıldı (videoId={}): {}", videoId, e.getMessage());
+            log.error("Dosya fiziksel olarak silinirken bir hata ile karşılaşıldı (videoId={}): {}", video.getId(), e.getMessage());
         }
-        videoRepository.delete(video);
     }
 
     public List<Video> getVideosForBatch(String batchId, String userEmail) {

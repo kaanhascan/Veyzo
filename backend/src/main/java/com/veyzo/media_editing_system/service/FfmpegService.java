@@ -13,6 +13,8 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -77,6 +79,7 @@ public class FfmpegService {
                 video.setStatus(VideoStatus.COMPLETED);
                 video.setProcessedFileName(outputFileName);
                 video.setProcessedFilePath(outputFilePath);
+                deleteRawFileIfSeparate(video.getOriginalFilePath(), outputFilePath);
             } else {
                 video.setStatus(VideoStatus.FAILED);
             }
@@ -120,6 +123,7 @@ public class FfmpegService {
                 video.setStatus(VideoStatus.COMPLETED);
                 video.setProcessedFileName(outputFileName);
                 video.setProcessedFilePath(outputFilePath);
+                deleteRawFileIfSeparate(video.getOriginalFilePath(), outputFilePath);
             } else {
                 video.setStatus(VideoStatus.FAILED);
             }
@@ -221,6 +225,7 @@ public class FfmpegService {
                 video.setStatus(VideoStatus.COMPLETED);
                 video.setProcessedFileName(outputFileName);
                 video.setProcessedFilePath(outputFilePath);
+                deleteRawFileIfSeparate(video.getOriginalFilePath(), outputFilePath);
             } else {
                 video.setStatus(VideoStatus.FAILED);
             }
@@ -333,6 +338,7 @@ public class FfmpegService {
                     latestVideo.setStatus(VideoStatus.COMPLETED);
                     latestVideo.setProcessedFileName(finalOutputFileName);
                     latestVideo.setProcessedFilePath(finalOutputFilePath);
+                    deleteRawFileIfSeparate(latestVideo.getOriginalFilePath(), finalOutputFilePath);
                 } else {
                     latestVideo.setStatus(VideoStatus.FAILED);
                 }
@@ -439,5 +445,18 @@ public class FfmpegService {
             return false;
         }
         return true;
+    }
+
+    private void deleteRawFileIfSeparate(String originalFilePath, String processedFilePath) {
+        if (originalFilePath == null || "virtual".equals(originalFilePath) || originalFilePath.equals(processedFilePath)) {
+            return;
+        }
+        try {
+            if (Files.deleteIfExists(Paths.get(originalFilePath))) {
+                log.debug("İşlem tamamlandığı için ham kaynak dosya silindi: {}", originalFilePath);
+            }
+        } catch (Exception e) {
+            log.warn("Ham kaynak dosya silinirken hata oluştu ({}): {}", originalFilePath, e.getMessage());
+        }
     }
 }
