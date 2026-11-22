@@ -1,6 +1,13 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api/axiosConfig';
+
+const formatDuration = (seconds) => {
+    if (!Number.isFinite(seconds) || seconds < 0) return '00:00';
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+};
 
 const computeRecommendedLosslessMb = (origMb, meta) => {
     if (!origMb || origMb <= 0) return 0.1;
@@ -90,8 +97,63 @@ const calculateQualityImpact = (targetStr, origMb, recLosslessMb) => {
     };
 };
 
+const drawSimulatedCompressionFrame = (video, canvas, offscreenCanvasRef, loss) => {
+    if (!video || !canvas || video.readyState < 2) return;
+
+    const width = video.videoWidth || 640;
+    const height = video.videoHeight || 360;
+
+    if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+    }
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    if (loss <= 0) {
+        ctx.imageSmoothingEnabled = true;
+        ctx.drawImage(video, 0, 0, width, height);
+        return;
+    }
+
+    if (!offscreenCanvasRef.current) {
+        offscreenCanvasRef.current = document.createElement('canvas');
+    }
+    const offCanvas = offscreenCanvasRef.current;
+
+    const normalizedLoss = Math.min(90, Math.max(1, loss)) / 100;
+    const scaleFactor = Math.max(0.10, Math.pow(1 - normalizedLoss * 0.92, 1.55));
+    const scaledW = Math.max(20, Math.round(width * scaleFactor));
+    const scaledH = Math.max(12, Math.round(height * scaleFactor));
+
+    if (offCanvas.width !== scaledW || offCanvas.height !== scaledH) {
+        offCanvas.width = scaledW;
+        offCanvas.height = scaledH;
+    }
+
+    const offCtx = offCanvas.getContext('2d');
+    if (!offCtx) return;
+
+    offCtx.imageSmoothingEnabled = true;
+    offCtx.drawImage(video, 0, 0, scaledW, scaledH);
+
+    ctx.clearRect(0, 0, width, height);
+    ctx.imageSmoothingEnabled = loss < 38;
+    ctx.drawImage(offCanvas, 0, 0, scaledW, scaledH, 0, 0, width, height);
+
+    if (loss >= 25 && loss < 38) {
+        ctx.save();
+        ctx.globalAlpha = 0.35;
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(offCanvas, 0, 0, scaledW, scaledH, 0, 0, width, height);
+        ctx.restore();
+    }
+};
+
 const CompressVideo = () => {
     const [file, setFile] = useState(null);
+    const [previewUrl, setPreviewUrl] = useState('');
     const [title, setTitle] = useState('');
     const [targetSizeMb, setTargetSizeMb] = useState('');
     const [videoMeta, setVideoMeta] = useState(null);
@@ -100,7 +162,17 @@ const CompressVideo = () => {
     const [error, setError] = useState('');
     const [isDragging, setIsDragging] = useState(false);
 
+    const [sliderPosition, setSliderPosition] = useState(50);
+    const [isSliderDragging, setIsSliderDragging] = useState(false);
+    const [isPlaying, setIsPlaying] = useState(false);
+    const [currentTime, setCurrentTime] = useState(0);
+
     const fileInputRef = useRef(null);
+    const previewContainerRef = useRef(null);
+    const previewVideoRef = useRef(null);
+    const compressedCanvasRef = useRef(null);
+    const offscreenCanvasRef = useRef(null);
+    const animFrameRef = useRef(null);
     const navigate = useNavigate();
 
     const originalSizeMb = file ? file.size / (1024 * 1024) : 0;
@@ -109,6 +181,121 @@ const CompressVideo = () => {
         ? Math.max(1, Math.round((1 - recommendedLosslessMb / originalSizeMb) * 100))
         : 0;
     const qualityImpact = calculateQualityImpact(targetSizeMb, originalSizeMb, recommendedLosslessMb);
+    const activeQualityLoss = qualityImpact.isValid ? (qualityImpact.qualityLossPercent || 0) : 0;
+
+    useEffect(() => {
+        return () => {
+            if (previewUrl) {
+                URL.revokeObjectURL(previewUrl);
+            }
+            if (animFrameRef.current) {
+                cancelAnimationFrame(animFrameRef.current);
+            }
+        };
+    }, [previewUrl]);
+
+    const renderCompressedFrame = () => {
+        drawSimulatedCompressionFrame(
+            previewVideoRef.current,
+            compressedCanvasRef.current,
+            offscreenCanvasRef,
+            activeQualityLoss
+        );
+    };
+
+    useEffect(() => {
+        drawSimulatedCompressionFrame(
+            previewVideoRef.current,
+            compressedCanvasRef.current,
+            offscreenCanvasRef,
+            activeQualityLoss
+        );
+    }, [activeQualityLoss, targetSizeMb]);
+
+    useEffect(() => {
+        const tick = () => {
+            drawSimulatedCompressionFrame(
+                previewVideoRef.current,
+                compressedCanvasRef.current,
+                offscreenCanvasRef,
+                activeQualityLoss
+            );
+            if (isPlaying) {
+                animFrameRef.current = requestAnimationFrame(tick);
+            }
+        };
+
+        if (isPlaying) {
+            animFrameRef.current = requestAnimationFrame(tick);
+        } else if (animFrameRef.current) {
+            cancelAnimationFrame(animFrameRef.current);
+        }
+
+        return () => {
+            if (animFrameRef.current) {
+                cancelAnimationFrame(animFrameRef.current);
+            }
+        };
+    }, [isPlaying, activeQualityLoss]);
+
+    const updateSliderFromClientX = useCallback((clientX) => {
+        const container = previewContainerRef.current;
+        if (!container) return;
+        const rect = container.getBoundingClientRect();
+        if (rect.width <= 0) return;
+        const relativeX = clientX - rect.left;
+        const percent = Math.max(0, Math.min(100, (relativeX / rect.width) * 100));
+        setSliderPosition(Number(percent.toFixed(1)));
+    }, []);
+
+    useEffect(() => {
+        if (!isSliderDragging) return undefined;
+
+        const handleMouseMove = (e) => {
+            updateSliderFromClientX(e.clientX);
+        };
+        const handleTouchMove = (e) => {
+            if (e.touches && e.touches.length > 0) {
+                updateSliderFromClientX(e.touches[0].clientX);
+            }
+        };
+        const handleStopDrag = () => {
+            setIsSliderDragging(false);
+        };
+
+        window.addEventListener('mousemove', handleMouseMove);
+        window.addEventListener('mouseup', handleStopDrag);
+        window.addEventListener('touchmove', handleTouchMove);
+        window.addEventListener('touchend', handleStopDrag);
+
+        return () => {
+            window.removeEventListener('mousemove', handleMouseMove);
+            window.removeEventListener('mouseup', handleStopDrag);
+            window.removeEventListener('touchmove', handleTouchMove);
+            window.removeEventListener('touchend', handleStopDrag);
+        };
+    }, [isSliderDragging, updateSliderFromClientX]);
+
+    const togglePlayPause = () => {
+        const video = previewVideoRef.current;
+        if (!video) return;
+        if (video.paused || video.ended) {
+            video.play().catch(() => { });
+        } else {
+            video.pause();
+        }
+    };
+
+    const handleSeekChange = (e) => {
+        const video = previewVideoRef.current;
+        if (!video) return;
+        const newTime = parseFloat(e.target.value);
+        if (Number.isFinite(newTime)) {
+            video.currentTime = newTime;
+            setCurrentTime(newTime);
+            renderCompressedFrame();
+        }
+    };
 
     const handleFileSelect = (selectedFile) => {
         if (!selectedFile || !selectedFile.type.startsWith('video/')) {
@@ -116,36 +303,23 @@ const CompressVideo = () => {
             return;
         }
 
+        if (previewUrl) {
+            URL.revokeObjectURL(previewUrl);
+        }
+
+        const newPreviewUrl = URL.createObjectURL(selectedFile);
+        setPreviewUrl(newPreviewUrl);
         setFile(selectedFile);
         setError('');
         setIsConfirming(false);
         setVideoMeta(null);
+        setIsPlaying(false);
+        setCurrentTime(0);
+        setSliderPosition(50);
 
         const origMb = selectedFile.size / (1024 * 1024);
         const initialRecommended = computeRecommendedLosslessMb(origMb, null);
         setTargetSizeMb(String(initialRecommended));
-
-        const videoEl = document.createElement('video');
-        videoEl.preload = 'metadata';
-        const objectUrl = URL.createObjectURL(selectedFile);
-
-        videoEl.onloadedmetadata = () => {
-            URL.revokeObjectURL(objectUrl);
-            const meta = {
-                duration: Number.isFinite(videoEl.duration) ? videoEl.duration : 0,
-                width: videoEl.videoWidth || 0,
-                height: videoEl.videoHeight || 0
-            };
-            setVideoMeta(meta);
-            const refinedRecommended = computeRecommendedLosslessMb(origMb, meta);
-            setTargetSizeMb(String(refinedRecommended));
-        };
-
-        videoEl.onerror = () => {
-            URL.revokeObjectURL(objectUrl);
-        };
-
-        videoEl.src = objectUrl;
     };
 
     const handleDragOver = (e) => {
@@ -227,7 +401,7 @@ const CompressVideo = () => {
         <div className="upload-page">
             <div className="upload-shell">
                 <div className="upload-header">
-                    <h2 className="upload-title">Videoyu Sıkıştır (Hedef Boyut & Kalite Kontrolü)</h2>
+                    <h2 className="upload-title">Videoyu Sıkıştır</h2>
                 </div>
 
                 <p className="muted-text page-description">
@@ -402,6 +576,159 @@ const CompressVideo = () => {
                                             </div>
 
                                             <p className="quality-feedback-text">{qualityImpact.feedbackText}</p>
+                                        </div>
+                                    )}
+
+                                    {previewUrl && (
+                                        <div className="comparison-preview-section">
+                                            <div className="comparison-preview-header">
+                                                <div>
+                                                    <span className="quality-feedback-title">Canlı Görüntü Karşılaştırması (Kayar Pencere)</span>
+                                                    <h4 className="comparison-preview-subtitle">
+                                                        Ortadaki çizgiyi sağa-sola kaydırarak orijinal görüntü ile hedef boyuttaki kalite farkını inceleyin
+                                                    </h4>
+                                                </div>
+                                                <div className="comparison-quick-views">
+                                                    <button
+                                                        type="button"
+                                                        className={`preset-chip ${sliderPosition === 100 ? 'active' : ''}`}
+                                                        onClick={() => setSliderPosition(100)}
+                                                    >
+                                                        Tam Orijinal
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        className={`preset-chip ${sliderPosition === 50 ? 'active' : ''}`}
+                                                        onClick={() => setSliderPosition(50)}
+                                                    >
+                                                        %50 / %50 Kıyasla
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        className={`preset-chip ${sliderPosition === 0 ? 'active' : ''}`}
+                                                        onClick={() => setSliderPosition(0)}
+                                                    >
+                                                        Tam Sıkıştırılmış
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            <div
+                                                ref={previewContainerRef}
+                                                className="comparison-stage"
+                                                onMouseDown={(e) => {
+                                                    setIsSliderDragging(true);
+                                                    updateSliderFromClientX(e.clientX);
+                                                }}
+                                                onTouchStart={(e) => {
+                                                    if (e.touches && e.touches.length > 0) {
+                                                        setIsSliderDragging(true);
+                                                        updateSliderFromClientX(e.touches[0].clientX);
+                                                    }
+                                                }}
+                                            >
+                                                <video
+                                                    ref={previewVideoRef}
+                                                    src={previewUrl}
+                                                    className="comparison-video-base"
+                                                    playsInline
+                                                    onLoadedMetadata={(e) => {
+                                                        const vid = e.currentTarget;
+                                                        const meta = {
+                                                            duration: Number.isFinite(vid.duration) ? vid.duration : 0,
+                                                            width: vid.videoWidth || 0,
+                                                            height: vid.videoHeight || 0
+                                                        };
+                                                        setVideoMeta(meta);
+                                                        if (file) {
+                                                            const origMb = file.size / (1024 * 1024);
+                                                            const refinedRecommended = computeRecommendedLosslessMb(origMb, meta);
+                                                            setTargetSizeMb(String(refinedRecommended));
+                                                        }
+                                                    }}
+                                                    onLoadedData={() => {
+                                                        renderCompressedFrame();
+                                                    }}
+                                                    onTimeUpdate={(e) => {
+                                                        setCurrentTime(e.currentTarget.currentTime);
+                                                        if (!isPlaying) {
+                                                            renderCompressedFrame();
+                                                        }
+                                                    }}
+                                                    onSeeked={() => {
+                                                        renderCompressedFrame();
+                                                    }}
+                                                    onPlay={() => setIsPlaying(true)}
+                                                    onPause={() => {
+                                                        setIsPlaying(false);
+                                                        renderCompressedFrame();
+                                                    }}
+                                                    onEnded={() => setIsPlaying(false)}
+                                                />
+
+                                                <canvas
+                                                    ref={compressedCanvasRef}
+                                                    className="comparison-canvas-overlay"
+                                                    style={{
+                                                        clipPath: `inset(0 0 0 ${sliderPosition}%)`,
+                                                        filter: qualityImpact.isValid && qualityImpact.qualityLossPercent > 0
+                                                            ? `contrast(${(1 - qualityImpact.qualityLossPercent * 0.0018).toFixed(3)}) saturate(${(1 - qualityImpact.qualityLossPercent * 0.0025).toFixed(3)})`
+                                                            : 'none'
+                                                    }}
+                                                />
+
+                                                <div className="comparison-label comparison-label-left">
+                                                    <span className="comparison-label-tag">ORİJİNAL</span>
+                                                    <strong>{originalSizeMb.toFixed(2)} MB • %100 Kalite</strong>
+                                                </div>
+
+                                                <div
+                                                    className={`comparison-label comparison-label-right level-${qualityImpact.isValid ? qualityImpact.level : 'lossless'}`}
+                                                >
+                                                    <span className="comparison-label-tag">SIKIŞTIRILMIŞ ÖNİZLEME</span>
+                                                    <strong>
+                                                        {qualityImpact.isValid
+                                                            ? `${qualityImpact.targetNum.toFixed(2)} MB • %${qualityImpact.qualityRetainedPercent} Kalite`
+                                                            : 'Geçersiz Boyut'}
+                                                    </strong>
+                                                </div>
+
+                                                <div
+                                                    className="comparison-divider"
+                                                    style={{ left: `${sliderPosition}%` }}
+                                                >
+                                                    <div className="comparison-handle" title="Kıyaslamak için sağa veya sola sürükleyin">
+                                                        <span>◀</span>
+                                                        <span>▶</span>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <div className="comparison-controls-bar">
+                                                <button
+                                                    type="button"
+                                                    onClick={togglePlayPause}
+                                                    className="secondary-button comparison-play-btn"
+                                                >
+                                                    {isPlaying ? '⏸ Duraklat' : '▶ Videoyu Oynat'}
+                                                </button>
+
+                                                <div className="comparison-seek-wrapper">
+                                                    <span className="comparison-time-text">{formatDuration(currentTime)}</span>
+                                                    <input
+                                                        type="range"
+                                                        min="0"
+                                                        max={videoMeta && videoMeta.duration > 0 ? videoMeta.duration : 100}
+                                                        step="0.05"
+                                                        value={currentTime}
+                                                        onChange={handleSeekChange}
+                                                        className="trim-range comparison-seek-slider"
+                                                    />
+                                                    <span className="comparison-time-text">
+                                                        {formatDuration(videoMeta ? videoMeta.duration : 0)}
+                                                    </span>
+                                                </div>
+                                            </div>
                                         </div>
                                     )}
                                 </>
