@@ -313,7 +313,7 @@ public class VideoService {
         ffmpegService.processGifConversion(savedVideo.getId());
     }
 
-    public void uploadForCompression(MultipartFile file, String title, OperationType operationType) throws IOException {
+    public void uploadForCompression(MultipartFile file, String title, Double targetSizeMb, OperationType operationType) throws IOException {
         File directory = new File(UPLOAD_DIR);
         if (!directory.exists()) directory.mkdirs();
 
@@ -334,7 +334,7 @@ public class VideoService {
 
         Video savedVideo = videoRepository.save(video);
 
-        ffmpegService.processVideoCompression(savedVideo.getId());
+        ffmpegService.processVideoCompression(savedVideo.getId(), targetSizeMb);
     }
 
     public Video getOwnedVideo(UUID videoId) {

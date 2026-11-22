@@ -66,4 +66,17 @@ public class FileValidator {
             throw new IllegalArgumentException("Geçerli bir başlık girmelisiniz.");
         }
     }
+
+    public static void validateTargetSize(Double targetSizeMb, long originalFileSizeInBytes) {
+        if (targetSizeMb == null) {
+            return;
+        }
+        if (targetSizeMb.isNaN() || targetSizeMb.isInfinite() || targetSizeMb < 0.1) {
+            throw new IllegalArgumentException("Hedef boyut en az 0.1 MB olmalıdır.");
+        }
+        double originalSizeMb = originalFileSizeInBytes / (1024.0 * 1024.0);
+        if (targetSizeMb >= originalSizeMb) {
+            throw new IllegalArgumentException("Hedef boyut, videonun mevcut boyutundan (" + String.format(java.util.Locale.US, "%.2f", originalSizeMb) + " MB) küçük olmalıdır.");
+        }
+    }
 }

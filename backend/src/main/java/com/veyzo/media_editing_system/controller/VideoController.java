@@ -186,12 +186,14 @@ public class VideoController {
     @PostMapping(value = "/compress", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<String> compressVideo(
             @RequestParam("file") MultipartFile file,
-            @RequestParam("title") String title
+            @RequestParam("title") String title,
+            @RequestParam(value = "targetSizeMb", required = false) Double targetSizeMb
     ) throws IOException {
         FileValidator.validateVideoFile(file);
         FileValidator.validateTitle(title);
+        FileValidator.validateTargetSize(targetSizeMb, file.getSize());
 
-        videoService.uploadForCompression(file, title, OperationType.COMPRESS);
+        videoService.uploadForCompression(file, title, targetSizeMb, OperationType.COMPRESS);
         return ResponseEntity.ok("Sıkıştırma işlemi başarıyla kuyruğa alındı.");
     }
 }

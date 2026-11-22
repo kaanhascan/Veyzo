@@ -19,6 +19,8 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -231,7 +233,7 @@ public class FfmpegService {
     }
 
     @Async("ffmpegTaskExecutor")
-    public void processVideoCompression(UUID videoId) {
+    public void processVideoCompression(UUID videoId, Double targetSizeMb) {
         Video initialVideo = videoRepository.findById(videoId)
                 .orElseThrow(() -> new RuntimeException("Sıkıştırma için video kaydı bulunamadı"));
 
@@ -249,16 +251,70 @@ public class FfmpegService {
             String outputFileName = "compressed_" + UUID.randomUUID() + ".mp4";
             String outputFilePath = PROCESSED_DIR + outputFileName;
 
-            ProcessBuilder processBuilder = new ProcessBuilder(
-                    "ffmpeg", "-y",
-                    "-i", initialVideo.getOriginalFilePath(),
-                    "-vcodec", "libx264",
-                    "-crf", "28",
-                    "-preset", "fast",
-                    "-c:a", "aac",
-                    "-b:a", "128k",
-                    outputFilePath
-            );
+            ProcessBuilder processBuilder;
+            if (targetSizeMb != null && targetSizeMb > 0) {
+                File originalFile = new File(initialVideo.getOriginalFilePath());
+                double originalSizeMb = originalFile.exists() ? originalFile.length() / (1024.0 * 1024.0) : 0;
+                double durationSeconds = probeVideoDurationSeconds(initialVideo.getOriginalFilePath());
+
+                if (durationSeconds > 0) {
+                    double targetTotalKilobits = targetSizeMb * 8192.0 * 0.95;
+                    double totalKbps = targetTotalKilobits / durationSeconds;
+
+                    int audioBitrateKbps;
+                    if (totalKbps < 120) {
+                        audioBitrateKbps = 48;
+                    } else if (totalKbps < 240) {
+                        audioBitrateKbps = 64;
+                    } else if (totalKbps < 400) {
+                        audioBitrateKbps = 96;
+                    } else {
+                        audioBitrateKbps = 128;
+                    }
+
+                    int videoBitrateKbps = Math.max(40, (int) Math.floor(totalKbps - audioBitrateKbps));
+                    int maxRateKbps = Math.max(videoBitrateKbps + 10, (int) Math.round(videoBitrateKbps * 1.15));
+                    int bufSizeKbps = videoBitrateKbps * 2;
+
+                    processBuilder = new ProcessBuilder(
+                            "ffmpeg", "-y",
+                            "-i", initialVideo.getOriginalFilePath(),
+                            "-vcodec", "libx264",
+                            "-b:v", videoBitrateKbps + "k",
+                            "-maxrate", maxRateKbps + "k",
+                            "-bufsize", bufSizeKbps + "k",
+                            "-preset", "fast",
+                            "-c:a", "aac",
+                            "-b:a", audioBitrateKbps + "k",
+                            outputFilePath
+                    );
+                } else {
+                    double ratio = (originalSizeMb > 0) ? (targetSizeMb / originalSizeMb) : 0.5;
+                    int crf = Math.max(20, Math.min(42, (int) Math.round(20 + (1.0 - ratio) * 24)));
+
+                    processBuilder = new ProcessBuilder(
+                            "ffmpeg", "-y",
+                            "-i", initialVideo.getOriginalFilePath(),
+                            "-vcodec", "libx264",
+                            "-crf", String.valueOf(crf),
+                            "-preset", "fast",
+                            "-c:a", "aac",
+                            "-b:a", "128k",
+                            outputFilePath
+                    );
+                }
+            } else {
+                processBuilder = new ProcessBuilder(
+                        "ffmpeg", "-y",
+                        "-i", initialVideo.getOriginalFilePath(),
+                        "-vcodec", "libx264",
+                        "-crf", "28",
+                        "-preset", "fast",
+                        "-c:a", "aac",
+                        "-b:a", "128k",
+                        outputFilePath
+                );
+            }
 
             if (runFfmpegProcess(processBuilder, "COMPRESS")) {
                 isSuccess = true;
@@ -284,6 +340,79 @@ public class FfmpegService {
                 videoRepository.save(latestVideo);
             }
         }
+    }
+
+    private double probeVideoDurationSeconds(String filePath) {
+        try {
+            ProcessBuilder ffprobeBuilder = new ProcessBuilder(
+                    "ffprobe", "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1",
+                    filePath
+            );
+            ffprobeBuilder.redirectErrorStream(true);
+            Process ffprobeProcess = ffprobeBuilder.start();
+
+            String durationLine = null;
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(ffprobeProcess.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    String trimmed = line.trim();
+                    if (!trimmed.isEmpty() && durationLine == null) {
+                        durationLine = trimmed;
+                    }
+                }
+            }
+
+            boolean finished = ffprobeProcess.waitFor(30, TimeUnit.SECONDS);
+            if (!finished) {
+                ffprobeProcess.destroyForcibly();
+            } else if (ffprobeProcess.exitValue() == 0 && durationLine != null) {
+                double duration = Double.parseDouble(durationLine);
+                if (duration > 0) {
+                    return duration;
+                }
+            }
+        } catch (Exception e) {
+            log.debug("ffprobe ile video süresi alınamadı, ffmpeg fallback denenecek: {}", e.getMessage());
+        }
+
+        try {
+            ProcessBuilder ffmpegBuilder = new ProcessBuilder("ffmpeg", "-i", filePath);
+            ffmpegBuilder.redirectErrorStream(true);
+            Process ffmpegProcess = ffmpegBuilder.start();
+
+            Pattern durationPattern = Pattern.compile("Duration:\\s*(\\d{2}):(\\d{2}):(\\d{2}(?:\\.\\d+)?)");
+            double parsedDuration = -1;
+
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(ffmpegProcess.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    if (parsedDuration <= 0) {
+                        Matcher matcher = durationPattern.matcher(line);
+                        if (matcher.find()) {
+                            int hours = Integer.parseInt(matcher.group(1));
+                            int minutes = Integer.parseInt(matcher.group(2));
+                            double seconds = Double.parseDouble(matcher.group(3));
+                            parsedDuration = hours * 3600.0 + minutes * 60.0 + seconds;
+                        }
+                    }
+                }
+            }
+
+            boolean finished = ffmpegProcess.waitFor(30, TimeUnit.SECONDS);
+            if (!finished) {
+                ffmpegProcess.destroyForcibly();
+            }
+
+            if (parsedDuration > 0) {
+                return parsedDuration;
+            }
+        } catch (Exception e) {
+            log.warn("Video süresi tespit edilemedi (filePath={}): {}", filePath, e.getMessage());
+        }
+
+        return -1;
     }
 
     private boolean runFfmpegProcess(ProcessBuilder processBuilder, String operationTag) throws Exception {
