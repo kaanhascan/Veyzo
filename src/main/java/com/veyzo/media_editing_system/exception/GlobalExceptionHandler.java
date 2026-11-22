@@ -72,7 +72,7 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(MaxUploadSizeExceededException.class)
     public ResponseEntity<ApiErrorResponse> handleMaxSizeException(MaxUploadSizeExceededException ex, HttpServletRequest request) {
         return buildErrorResponse(
-                HttpStatus.PAYLOAD_TOO_LARGE,
+                HttpStatus.CONTENT_TOO_LARGE,
                 "Dosya boyutu çok yüksek! Lütfen daha küçük bir dosya yükleyin.",
                 request
         );
