@@ -1,7 +1,18 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api/axiosConfig';
 import toast from 'react-hot-toast';
+
+const getOperationDetails = (type) => {
+    switch (type) {
+        case 'TRIM': return { label: 'Kırpma', class: 'op-trim' };
+        case 'COMPRESS': return { label: 'Sıkıştırma', class: 'op-compress' };
+        case 'AUDIO': return { label: 'Ses Ayrıştırma', class: 'op-audio' };
+        case 'MERGE': return { label: 'Birleştirme', class: 'op-merge' };
+        case 'GIF': return { label: 'GIF', class: 'op-gif' };
+        default: return { label: 'İşlem', class: '' };
+    }
+};
 
 const Dashboard = () => {
     const [videos, setVideos] = useState([]);
@@ -11,24 +22,7 @@ const Dashboard = () => {
 
     const navigate = useNavigate();
 
-    useEffect(() => {
-        fetchMyVideos(true);
-        const interval = setInterval(() => { fetchMyVideos(false); }, 5000);
-        return () => clearInterval(interval);
-    }, []);
-
-    const getOperationDetails = (type) => {
-        switch (type) {
-            case 'TRIM': return { label: 'Kırpma', class: 'op-trim' };
-            case 'COMPRESS': return { label: 'Sıkıştırma', class: 'op-compress' };
-            case 'AUDIO': return { label: 'Ses Ayrıştırma', class: 'op-audio' };
-            case 'MERGE': return { label: 'Birleştirme', class: 'op-merge' };
-            case 'GIF': return { label: 'GIF', class: 'op-gif' };
-            default: return { label: 'İşlem', class: '' };
-        }
-    };
-
-    const fetchMyVideos = async (isInitialLoad = false) => {
+    const fetchMyVideos = useCallback(async (isInitialLoad = false) => {
         try {
             const response = await api.get('/videos/my-videos');
             const newVideos = response.data;
@@ -70,7 +64,14 @@ const Dashboard = () => {
                 navigate('/login');
             }
         }
-    };
+    }, [navigate]);
+
+    useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        fetchMyVideos(true);
+        const interval = setInterval(() => { fetchMyVideos(false); }, 5000);
+        return () => clearInterval(interval);
+    }, [fetchMyVideos]);
 
     const handleLogout = async () => {
         try {
@@ -103,7 +104,7 @@ const Dashboard = () => {
                 setVideos((current) => current.filter((v) => v.id !== id));
                 toast.success('Video başarıyla silindi.');
             }
-        } catch (err) {
+        } catch {
             toast.error('Silme işlemi sırasında bir hata oluştu.');
         }
     };

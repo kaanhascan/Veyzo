@@ -16,18 +16,17 @@ const MergeVideos = () => {
     const navigate = useNavigate();
 
     useEffect(() => {
+        const fetchCompletedVideos = async () => {
+            try {
+                const response = await api.get('/videos/my-videos');
+                const completedVideos = response.data.filter(video => video.status === 'COMPLETED');
+                setAvailableVideos(completedVideos);
+            } catch (err) {
+                console.error("Video çekme hatası:", err);
+            }
+        };
         fetchCompletedVideos();
     }, []);
-
-    const fetchCompletedVideos = async () => {
-        try {
-            const response = await api.get('/videos/my-videos');
-            const completedVideos = response.data.filter(video => video.status === 'COMPLETED');
-            setAvailableVideos(completedVideos);
-        } catch (err) {
-            console.error("Video çekme hatası:", err);
-        }
-    };
 
     const handleCheckboxChange = (videoId) => {
         setSelectedVideoIds((prevSelected) => {

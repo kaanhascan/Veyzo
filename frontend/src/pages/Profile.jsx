@@ -10,25 +10,24 @@ const Profile = () => {
     const [error, setError] = useState('');
 
     useEffect(() => {
-        fetchUserProfile();
-    }, []);
+        const fetchUserProfile = async () => {
+            try {
+                const response = await api.get('/users/me');
+                setUser(response.data);
+                setLoading(false);
+            } catch (err) {
+                console.error(err);
+                setError('Profil bilgileri alınırken bir hata oluştu.');
+                setLoading(false);
 
-    const fetchUserProfile = async () => {
-        try {
-            const response = await api.get('/users/me');
-            setUser(response.data);
-            setLoading(false);
-        } catch (err) {
-            console.error(err);
-            setError('Profil bilgileri alınırken bir hata oluştu.');
-            setLoading(false);
-
-            if (err.response && err.response.status === 401) {
-                localStorage.removeItem('jwt_token');
-                navigate('/login');
+                if (err.response && err.response.status === 401) {
+                    localStorage.removeItem('jwt_token');
+                    navigate('/login');
+                }
             }
-        }
-    };
+        };
+        fetchUserProfile();
+    }, [navigate]);
 
     if (loading) {
         return (
